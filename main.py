@@ -52,14 +52,20 @@ def _extract_text(data: dict) -> str | None:
 
 async def _process(client_name: str, price: str | None, sender_jid: str):
     """Generate the updated PDF and optionally send it back."""
-    log.info("Generating proposal for: %s  price: %s", client_name, price or "unchanged")
-    pdf_path = update_proposal(client_name, price=price)
-    log.info("PDF saved: %s", pdf_path)
+    try:
+        log.info("Generating proposal for: %s  price: %s", client_name, price or "unchanged")
+        pdf_path = update_proposal(client_name, price=price)
+        log.info("PDF saved: %s", pdf_path)
 
-    if SEND_PDF_BACK and sender_jid:
-        caption = f"Updated proposal for M/S {client_name.title()}"
-        await send_document(sender_jid, pdf_path, caption)
-        log.info("PDF sent back to %s", sender_jid)
+        if SEND_PDF_BACK and sender_jid:
+            caption = f"Updated proposal for M/S {client_name.title()}"
+            log.info("Sending PDF to %s ...", sender_jid)
+            result = await send_document(sender_jid, pdf_path, caption)
+            log.info("Send result: %s", result)
+        else:
+            log.warning("PDF not sent — SEND_PDF_BACK=%s sender_jid=%r", SEND_PDF_BACK, sender_jid)
+    except Exception as e:
+        log.exception("ERROR in _process: %s", e)
 
 
 # ── endpoints ─────────────────────────────────────────────────────────────────
