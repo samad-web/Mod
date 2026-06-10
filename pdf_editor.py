@@ -11,7 +11,7 @@ import fitz
 import os
 import tempfile
 from datetime import datetime
-from config import TEMPLATE_PDF, OUTPUT_DIR, TEMPLATE_CLIENT_NAME
+from config import TEMPLATE_PDF, OUTPUT_DIR, TEMPLATE_CLIENT_NAME, TEMPLATE_PRICE
 
 
 # ── date helpers ──────────────────────────────────────────────────────────────
@@ -42,6 +42,15 @@ def _int_to_rgb(color_int: int) -> tuple:
 
 # ── font extraction ───────────────────────────────────────────────────────────
 
+def _format_price(price_str: str) -> str:
+    """Turn "2400" or "3,600" into "2,400AED/Yearly"."""
+    clean = price_str.replace(",", "").strip()
+    try:
+        return f"{int(clean):,}AED/Yearly"
+    except ValueError:
+        return f"{price_str}AED/Yearly"
+
+
 def _extract_poppins(doc: fitz.Document) -> tuple[fitz.Font | None, str | None]:
     """
     Extract the WinAnsiEncoding Poppins-Medium font from the PDF.
@@ -58,6 +67,22 @@ def _extract_poppins(doc: fitz.Document) -> tuple[fitz.Font | None, str | None]:
                     tmp.close()
                     font_obj = fitz.Font(fontbuffer=font_bytes)
                     return font_obj, tmp.name
+            except Exception:
+                pass
+    return None, None
+
+
+def _extract_poppins_regular(doc: fitz.Document) -> tuple[fitz.Font | None, str | None]:
+    """Extract the WinAnsiEncoding Poppins-Regular font from the PDF."""
+    for xref, ext, ftype, basename, name, enc in doc.get_page_fonts(2):
+        if "Poppins-Regular" in basename and enc == "WinAnsiEncoding":
+            try:
+                _, _, _, font_bytes = doc.extract_font(xref)
+                if font_bytes:
+                    tmp = tempfile.NamedTemporaryFile(suffix=".ttf", delete=False)
+                    tmp.write(font_bytes)
+                    tmp.close()
+                    return fitz.Font(fontbuffer=font_bytes), tmp.name
             except Exception:
                 pass
     return None, None
@@ -236,11 +261,36 @@ def _build_date_edit(page: fitz.Page, date: dict, font_obj: fitz.Font | None) ->
     }
 
 
+def _build_price_edit(page: fitz.Page, new_price: str) -> dict | None:
+    """Find the price span on page 3 and replace it."""
+    spans = _find_rawspans(page, TEMPLATE_PRICE)
+    if not spans:
+        rects = page.search_for(TEMPLATE_PRICE)
+        if not rects:
+            return None
+        return {
+            "redact_rects": [rects[0]],
+            "inserts": [{"origin": fitz.Point(rects[0].x0, rects[0].y1 - 2),
+                         "text": new_price, "fontsize": 12.0,
+                         "color": (0, 0, 0), "bold": False}],
+        }
+
+    span = spans[0]
+    origin = _span_origin(span)
+    return {
+        "redact_rects": [fitz.Rect(span["bbox"])],
+        "inserts": [{"origin": origin, "text": new_price,
+                     "fontsize": span["size"], "color": _int_to_rgb(span["color"]),
+                     "bold": False}],
+    }
+
+
 # ── public API ────────────────────────────────────────────────────────────────
 
-def update_proposal(client_name: str, output_filename: str | None = None) -> str:
+def update_proposal(client_name: str, price: str | None = None, output_filename: str | None = None) -> str:
     """
-    Open the template PDF, replace client name and date on page 1, save to output/.
+    Open the template PDF, replace client name and date on page 1,
+    optionally replace price on page 3, save to output/.
     Returns the absolute path to the generated PDF.
     """
     template_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), TEMPLATE_PDF)
@@ -258,6 +308,7 @@ def update_proposal(client_name: str, output_filename: str | None = None) -> str
 
     doc = fitz.open(template_path)
     font_obj, font_file = _extract_poppins(doc)
+    reg_font_obj, reg_font_file = _extract_poppins_regular(doc)
 
     try:
         page = doc[0]
@@ -270,22 +321,48 @@ def update_proposal(client_name: str, output_filename: str | None = None) -> str
         if date_edit:
             edits.append(date_edit)
 
-        # Step 1: redact all original spans (no fill — background shows through)
+        # Page 3 price edit
+        price_edit = None
+        if price:
+            formatted_price = _format_price(price)
+            price_edit = _build_price_edit(doc[2], formatted_price)
+
+        # Step 1: redact page 1 spans
         for edit in edits:
             for rect in edit["redact_rects"]:
                 page.add_redact_annot(rect)
         page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
 
-        # Step 2: re-insert replacement text at exact baseline origins
+        # Step 2: re-insert page 1 text
         font_kwargs: dict = {"fontfile": font_file} if font_file else {"fontname": "helv"}
         for edit in edits:
             for ins in edit["inserts"]:
+                extra: dict = {}
+                if ins.get("bold"):
+                    extra = {"render_mode": 2, "border_width": 0.4}
                 page.insert_text(
                     ins["origin"],
                     ins["text"],
                     fontsize=ins["fontsize"],
                     color=ins["color"],
                     **font_kwargs,
+                    **extra,
+                )
+
+        # Step 3: redact + re-insert page 3 price
+        if price_edit:
+            page3 = doc[2]
+            for rect in price_edit["redact_rects"]:
+                page3.add_redact_annot(rect)
+            page3.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+            reg_kwargs: dict = {"fontfile": reg_font_file} if reg_font_file else {"fontname": "helv"}
+            for ins in price_edit["inserts"]:
+                page3.insert_text(
+                    ins["origin"],
+                    ins["text"],
+                    fontsize=ins["fontsize"],
+                    color=ins["color"],
+                    **reg_kwargs,
                 )
 
         doc.save(output_path, garbage=4, deflate=True, clean=True)
@@ -293,5 +370,7 @@ def update_proposal(client_name: str, output_filename: str | None = None) -> str
         doc.close()
         if font_file and os.path.exists(font_file):
             os.unlink(font_file)
+        if reg_font_file and os.path.exists(reg_font_file):
+            os.unlink(reg_font_file)
 
     return os.path.abspath(output_path)

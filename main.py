@@ -3,20 +3,21 @@ FastAPI server.
 
 Endpoints:
   POST /webhook          — Evolution API webhook (text message → update PDF → send back)
-  POST /update-pdf       — Manual trigger: { "client_name": "Apollo Hospitals" }
+  POST /update-pdf       — Manual trigger: { "client_name": "Apollo Hospitals", "price": "2400" }
   GET  /health           — Liveness check
   GET  /download/{name}  — Download a generated PDF
 """
 import logging
 import os
 from contextlib import asynccontextmanager
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from config import ALLOWED_JIDS, OUTPUT_DIR, SEND_PDF_BACK
-from name_extractor import extract_client_name
+from config import BOT_JID, OUTPUT_DIR, SEND_PDF_BACK
+from name_extractor import extract_proposal
 from pdf_editor import update_proposal
 from evolution_client import send_document
 
@@ -49,10 +50,10 @@ def _extract_text(data: dict) -> str | None:
     return None
 
 
-async def _process(client_name: str, sender_jid: str):
+async def _process(client_name: str, price: str | None, sender_jid: str):
     """Generate the updated PDF and optionally send it back."""
-    log.info("Generating proposal for: %s", client_name)
-    pdf_path = update_proposal(client_name)
+    log.info("Generating proposal for: %s  price: %s", client_name, price or "unchanged")
+    pdf_path = update_proposal(client_name, price=price)
     log.info("PDF saved: %s", pdf_path)
 
     if SEND_PDF_BACK and sender_jid:
@@ -70,7 +71,7 @@ def health():
 
 @app.post("/webhook")
 async def webhook(request: Request, background_tasks: BackgroundTasks):
-    """Receive Evolution API webhook and trigger PDF update for self-sent text messages."""
+    """Receive Evolution API webhook and trigger PDF update."""
     payload = await request.json()
 
     event = payload.get("event", "")
@@ -83,14 +84,11 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
     from_me = key.get("fromMe", False)
     remote_jid = key.get("remoteJid", "")
 
-    # Accept messages from any configured trigger JID (from or to)
-    if ALLOWED_JIDS:
-        if remote_jid not in ALLOWED_JIDS:
-            return JSONResponse({"ignored": "not trigger JID"})
-    else:
-        # No JID configured — only accept self-messages
-        if not from_me:
-            return JSONResponse({"ignored": "not fromMe"})
+    # Only accept self-chat: BOT_JID sending a message to itself
+    if not from_me:
+        return JSONResponse({"ignored": "not sent by bot number"})
+    if BOT_JID and remote_jid != BOT_JID:
+        return JSONResponse({"ignored": "not a self-chat message"})
 
     sender_jid = remote_jid
 
@@ -98,33 +96,37 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
     if not text:
         return JSONResponse({"ignored": "no text content"})
 
-    client_name = extract_client_name(text)
-    if not client_name:
+    proposal = extract_proposal(text)
+    if not proposal:
         return JSONResponse({"ignored": "could not extract client name"})
 
-    log.info("Webhook: client name extracted → %s", client_name)
-    background_tasks.add_task(_process, client_name, sender_jid)
+    client_name = proposal["name"]
+    price = proposal["price"]
 
-    return JSONResponse({"status": "processing", "client_name": client_name})
+    log.info("Webhook: client=%s  price=%s", client_name, price or "unchanged")
+    background_tasks.add_task(_process, client_name, price, sender_jid)
+
+    return JSONResponse({"status": "processing", "client_name": client_name, "price": price})
 
 
 class UpdateRequest(BaseModel):
     client_name: str
+    price: Optional[str] = None
 
 
 @app.post("/update-pdf")
 async def update_pdf(body: UpdateRequest):
     """Manual endpoint for testing without WhatsApp."""
-    client_name = extract_client_name(body.client_name) or body.client_name.upper()
-    pdf_path = update_proposal(client_name)
+    proposal = extract_proposal(f"proposal for {body.client_name}")
+    client_name = proposal["name"] if proposal else body.client_name.upper()
+    pdf_path = update_proposal(client_name, price=body.price)
     filename = os.path.basename(pdf_path)
-    return {"status": "ok", "client_name": client_name, "file": filename, "download": f"/download/{filename}"}
+    return {"status": "ok", "client_name": client_name, "price": body.price, "file": filename, "download": f"/download/{filename}"}
 
 
 @app.get("/download/{filename}")
 def download(filename: str):
     """Serve a generated PDF."""
-    # Sanitise — no path traversal
     if "/" in filename or "\\" in filename or ".." in filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
     path = os.path.join(OUTPUT_DIR, filename)
