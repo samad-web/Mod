@@ -84,13 +84,13 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
     from_me = key.get("fromMe", False)
     remote_jid = key.get("remoteJid", "")
 
-    # Only accept self-chat: BOT_JID sending a message to itself
-    if not from_me:
-        return JSONResponse({"ignored": "not sent by bot number"})
+    # Only accept inbound messages FROM BOT_JID — ignore everything else
+    if from_me:
+        return JSONResponse({"ignored": "outgoing message"})
     if BOT_JID and remote_jid != BOT_JID:
-        return JSONResponse({"ignored": "not a self-chat message"})
+        return JSONResponse({"ignored": "sender not BOT_JID"})
 
-    sender_jid = remote_jid
+    sender_jid = BOT_JID  # always send PDF back to BOT_JID
 
     text = _extract_text(data)
     if not text:
