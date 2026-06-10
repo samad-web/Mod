@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: wecare-proposal-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: SEND_PDF_BACK
+        value: "true"
+      - key: TEMPLATE_PDF
+        value: Wecare-Clinic-Business-Proposal.pdf
+      - key: OUTPUT_DIR
+        value: output
+      - key: EVOLUTION_API_URL
+        sync: false
+      - key: EVOLUTION_INSTANCE
+        sync: false
+      - key: EVOLUTION_API_KEY
+        sync: false
+      - key: BOT_JID
+        sync: false
