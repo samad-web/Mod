@@ -154,27 +154,79 @@ def _build_name_edit(page: fitz.Page, new_name: str, font_obj: fitz.Font | None 
         group_cx    = (group_x0 + group_x1) / 2
 
         # Measure new group: "M/S " at ms_size  +  new_name at name_size
-        ms_w   = font_obj.text_length("M/S ", fontsize=ms_size)
-        name_w = font_obj.text_length(new_name.upper(), fontsize=name_size)
-        total_w = ms_w + name_w
+        ms_w      = font_obj.text_length("M/S ", fontsize=ms_size)
+        name_upper = new_name.upper()
+        name_w    = font_obj.text_length(name_upper, fontsize=name_size)
+        total_w   = ms_w + name_w
 
-        new_ms_x   = group_cx - total_w / 2
-        new_name_x = new_ms_x + ms_w
+        # Available width = page width minus symmetric margins
+        available_w = page.rect.width - 2 * 36  # 36pt ≈ 0.5 inch margin
 
-        pad = 4
+        pad         = 4
+        line_height = name_size * 1.4
+
+        if total_w <= available_w:
+            # ── Single line ──────────────────────────────────────────────────
+            new_ms_x   = group_cx - total_w / 2
+            new_name_x = new_ms_x + ms_w
+            redact_rect = fitz.Rect(
+                min(group_x0, new_ms_x) - pad,   ms_bbox[1],
+                max(group_x1, new_name_x + name_w) + pad, name_bbox[3],
+            )
+            return {
+                "redact_rects": [redact_rect],
+                "inserts": [
+                    {"origin": fitz.Point(new_ms_x,   baseline_y), "text": "M/S ",
+                     "fontsize": ms_size,  "color": ms_color, "bold": True},
+                    {"origin": fitz.Point(new_name_x, baseline_y), "text": name_upper,
+                     "fontsize": name_size, "color": name_color},
+                ],
+            }
+
+        # ── Multi-line: wrap at word boundaries ──────────────────────────────
+        words = name_upper.split()
+        line1_words: list[str] = []
+        split_idx = len(words)
+
+        for i, word in enumerate(words):
+            test_w = font_obj.text_length(" ".join(line1_words + [word]), fontsize=name_size)
+            if ms_w + test_w <= available_w:
+                line1_words.append(word)
+            else:
+                split_idx = i
+                break
+
+        line1 = " ".join(line1_words)
+        line2 = " ".join(words[split_idx:])
+
+        # Center line 1 (M/S + line1)
+        l1_name_w = font_obj.text_length(line1, fontsize=name_size)
+        l1_total  = ms_w + l1_name_w
+        l1_ms_x   = group_cx - l1_total / 2
+        l1_name_x = l1_ms_x + ms_w
+
+        # Center line 2 (name continuation only)
+        l2_w = font_obj.text_length(line2, fontsize=name_size)
+        l2_x = group_cx - l2_w / 2
+
         redact_rect = fitz.Rect(
-            min(group_x0, new_ms_x) - pad,   ms_bbox[1],
-            max(group_x1, new_name_x + name_w) + pad, name_bbox[3],
+            min(group_x0, l1_ms_x, l2_x) - pad,   ms_bbox[1],
+            max(group_x1, l1_name_x + l1_name_w, l2_x + l2_w) + pad,
+            name_bbox[3] + line_height,
         )
-        return {
-            "redact_rects": [redact_rect],
-            "inserts": [
-                {"origin": fitz.Point(new_ms_x,   baseline_y), "text": "M/S ",
-                 "fontsize": ms_size,  "color": ms_color},
-                {"origin": fitz.Point(new_name_x, baseline_y), "text": new_name.upper(),
-                 "fontsize": name_size, "color": name_color},
-            ],
-        }
+
+        inserts = [
+            {"origin": fitz.Point(l1_ms_x,  baseline_y),             "text": "M/S ",
+             "fontsize": ms_size,  "color": ms_color, "bold": True},
+            {"origin": fitz.Point(l1_name_x, baseline_y),            "text": line1,
+             "fontsize": name_size, "color": name_color},
+        ]
+        if line2:
+            inserts.append(
+                {"origin": fitz.Point(l2_x, baseline_y + line_height), "text": line2,
+                 "fontsize": name_size, "color": name_color}
+            )
+        return {"redact_rects": [redact_rect], "inserts": inserts}
 
     # Fallback: no M/S found — just keep name at its original x
     return {
