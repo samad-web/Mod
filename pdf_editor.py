@@ -159,8 +159,9 @@ def _build_name_edit(page: fitz.Page, new_name: str, font_obj: fitz.Font | None 
         name_w    = font_obj.text_length(name_upper, fontsize=name_size)
         total_w   = ms_w + name_w
 
-        # Available width = page width minus symmetric margins
-        available_w = page.rect.width - 2 * 36  # 36pt ≈ 0.5 inch margin
+        # Available width for centered text: must not go closer than 36pt to either edge
+        margin = 36
+        available_w = 2 * min(group_cx - margin, page.rect.width - group_cx - margin)
 
         pad         = 4
         line_height = name_size * 1.4
@@ -390,8 +391,6 @@ def update_proposal(client_name: str, price: str | None = None, output_filename:
         for edit in edits:
             for ins in edit["inserts"]:
                 extra: dict = {}
-                if ins.get("bold"):
-                    extra = {"render_mode": 2, "border_width": 0.4}
                 page.insert_text(
                     ins["origin"],
                     ins["text"],
