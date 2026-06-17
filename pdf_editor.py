@@ -148,27 +148,25 @@ def _build_name_edit(page: fitz.Page, new_name: str, font_obj: fitz.Font | None 
         ms_size  = ms_span["size"]
         ms_color = _int_to_rgb(ms_span["color"])
 
-        # Original group center (M/S + WECARE CLINIC combined)
-        group_x0    = min(ms_bbox[0], name_bbox[0])
-        group_x1    = max(ms_bbox[2], name_bbox[2])
-        group_cx    = (group_x0 + group_x1) / 2
+        # Always center on page center, not on the original (shorter) template text
+        group_x0 = min(ms_bbox[0], name_bbox[0])
+        group_x1 = max(ms_bbox[2], name_bbox[2])
+        page_cx  = page.rect.width / 2
 
-        # Measure new group: "M/S " at ms_size  +  new_name at name_size
-        ms_w      = font_obj.text_length("M/S ", fontsize=ms_size)
+        # Measure new group
+        ms_w       = font_obj.text_length("M/S ", fontsize=ms_size)
         name_upper = new_name.upper()
-        name_w    = font_obj.text_length(name_upper, fontsize=name_size)
-        total_w   = ms_w + name_w
+        name_w     = font_obj.text_length(name_upper, fontsize=name_size)
+        total_w    = ms_w + name_w
 
-        # Available width for centered text: must not go closer than 36pt to either edge
-        margin = 36
-        available_w = 2 * min(group_cx - margin, page.rect.width - group_cx - margin)
-
+        margin      = 40
+        available_w = page.rect.width - 2 * margin
         pad         = 4
         line_height = name_size * 1.4
 
         if total_w <= available_w:
             # ── Single line ──────────────────────────────────────────────────
-            new_ms_x   = group_cx - total_w / 2
+            new_ms_x   = page_cx - total_w / 2
             new_name_x = new_ms_x + ms_w
             redact_rect = fitz.Rect(
                 min(group_x0, new_ms_x) - pad,   ms_bbox[1],
@@ -178,7 +176,7 @@ def _build_name_edit(page: fitz.Page, new_name: str, font_obj: fitz.Font | None 
                 "redact_rects": [redact_rect],
                 "inserts": [
                     {"origin": fitz.Point(new_ms_x,   baseline_y), "text": "M/S ",
-                     "fontsize": ms_size,  "color": ms_color, "bold": True},
+                     "fontsize": ms_size,  "color": ms_color},
                     {"origin": fitz.Point(new_name_x, baseline_y), "text": name_upper,
                      "fontsize": name_size, "color": name_color},
                 ],
@@ -200,15 +198,14 @@ def _build_name_edit(page: fitz.Page, new_name: str, font_obj: fitz.Font | None 
         line1 = " ".join(line1_words)
         line2 = " ".join(words[split_idx:])
 
-        # Center line 1 (M/S + line1)
+        # Center line 1 (M/S + line1) and line 2 on page center
         l1_name_w = font_obj.text_length(line1, fontsize=name_size)
         l1_total  = ms_w + l1_name_w
-        l1_ms_x   = group_cx - l1_total / 2
+        l1_ms_x   = page_cx - l1_total / 2
         l1_name_x = l1_ms_x + ms_w
 
-        # Center line 2 (name continuation only)
         l2_w = font_obj.text_length(line2, fontsize=name_size)
-        l2_x = group_cx - l2_w / 2
+        l2_x = page_cx - l2_w / 2
 
         redact_rect = fitz.Rect(
             min(group_x0, l1_ms_x, l2_x) - pad,   ms_bbox[1],
@@ -217,9 +214,9 @@ def _build_name_edit(page: fitz.Page, new_name: str, font_obj: fitz.Font | None 
         )
 
         inserts = [
-            {"origin": fitz.Point(l1_ms_x,  baseline_y),             "text": "M/S ",
-             "fontsize": ms_size,  "color": ms_color, "bold": True},
-            {"origin": fitz.Point(l1_name_x, baseline_y),            "text": line1,
+            {"origin": fitz.Point(l1_ms_x,  baseline_y), "text": "M/S ",
+             "fontsize": ms_size,  "color": ms_color},
+            {"origin": fitz.Point(l1_name_x, baseline_y), "text": line1,
              "fontsize": name_size, "color": name_color},
         ]
         if line2:
