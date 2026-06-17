@@ -198,7 +198,12 @@ def _build_name_edit(page: fitz.Page, new_name: str, font_obj: fitz.Font | None 
         line1 = " ".join(line1_words)
         line2 = " ".join(words[split_idx:])
 
-        # Center line 1 (M/S + line1) and line 2 on page center
+        # Center both lines around the original baseline (line1 up half, line2 down half)
+        # so the block stays in place and the date below is not disturbed
+        half_lh = line_height / 2
+        l1_y = baseline_y - half_lh
+        l2_y = baseline_y + half_lh
+
         l1_name_w = font_obj.text_length(line1, fontsize=name_size)
         l1_total  = ms_w + l1_name_w
         l1_ms_x   = page_cx - l1_total / 2
@@ -208,23 +213,23 @@ def _build_name_edit(page: fitz.Page, new_name: str, font_obj: fitz.Font | None 
         l2_x = page_cx - l2_w / 2
 
         redact_rect = fitz.Rect(
-            min(group_x0, l1_ms_x, l2_x) - pad,   ms_bbox[1],
+            min(group_x0, l1_ms_x, l2_x) - pad,   ms_bbox[1] - half_lh,
             max(group_x1, l1_name_x + l1_name_w, l2_x + l2_w) + pad,
-            name_bbox[3] + line_height,
+            name_bbox[3] + half_lh,
         )
 
         inserts = [
-            {"origin": fitz.Point(l1_ms_x,  baseline_y), "text": "M/S ",
+            {"origin": fitz.Point(l1_ms_x,  l1_y), "text": "M/S ",
              "fontsize": ms_size,  "color": ms_color},
-            {"origin": fitz.Point(l1_name_x, baseline_y), "text": line1,
+            {"origin": fitz.Point(l1_name_x, l1_y), "text": line1,
              "fontsize": name_size, "color": name_color},
         ]
         if line2:
             inserts.append(
-                {"origin": fitz.Point(l2_x, baseline_y + line_height), "text": line2,
+                {"origin": fitz.Point(l2_x, baseline_y + half_lh), "text": line2,
                  "fontsize": name_size, "color": name_color}
             )
-        return {"redact_rects": [redact_rect], "inserts": inserts, "extra_y": line_height}
+        return {"redact_rects": [redact_rect], "inserts": inserts}
 
     # Fallback: no M/S found — just keep name at its original x
     return {
@@ -235,7 +240,7 @@ def _build_name_edit(page: fitz.Page, new_name: str, font_obj: fitz.Font | None 
     }
 
 
-def _build_date_edit(page: fitz.Page, date: dict, font_obj: fitz.Font | None, offset_y: float = 0) -> dict | None:
+def _build_date_edit(page: fitz.Page, date: dict, font_obj: fitz.Font | None) -> dict | None:
     """
     Reconstruct 'On DD<sup>TH</sup> Month YYYY' using correct baseline origins.
     date = {"day_str": "10", "suffix": "TH", "month_year": "June 2026"}
@@ -300,19 +305,12 @@ def _build_date_edit(page: fitz.Page, date: dict, font_obj: fitz.Font | None, of
     month_x  = suffix_x + suffix_w
 
     inserts = [
-        {"origin": fitz.Point(x0,       main_origin.y + offset_y), "text": on_day_text,             "fontsize": main_size, "color": main_color},
-        {"origin": fitz.Point(suffix_x,  sup_origin.y + offset_y), "text": date["suffix"],           "fontsize": sup_size,  "color": main_color},
-        {"origin": fitz.Point(month_x,  main_origin.y + offset_y), "text": f" {date['month_year']}", "fontsize": main_size, "color": main_color},
+        {"origin": fitz.Point(x0,      main_origin.y), "text": on_day_text,             "fontsize": main_size, "color": main_color},
+        {"origin": fitz.Point(suffix_x, sup_origin.y), "text": date["suffix"],           "fontsize": sup_size,  "color": main_color},
+        {"origin": fitz.Point(month_x,  main_origin.y), "text": f" {date['month_year']}", "fontsize": main_size, "color": main_color},
     ]
 
-    redact_rects = [fitz.Rect(s["bbox"]) for s in unique]
-    if offset_y:
-        # Also redact the area where the shifted date will land
-        for s in unique:
-            r = fitz.Rect(s["bbox"])
-            redact_rects.append(fitz.Rect(r.x0, r.y0 + offset_y, r.x1, r.y1 + offset_y))
-
-    return {"redact_rects": redact_rects, "inserts": inserts}
+    return {"redact_rects": [fitz.Rect(s["bbox"]) for s in unique], "inserts": inserts}
 
 
 def _build_price_edit(page: fitz.Page, new_price: str) -> dict | None:
@@ -369,7 +367,7 @@ def update_proposal(client_name: str, price: str | None = None, output_filename:
         date = format_proposal_date()
 
         name_edit = _build_name_edit(page, client_name, font_obj)
-        date_edit = _build_date_edit(page, date, font_obj, offset_y=name_edit.get("extra_y", 0))
+        date_edit = _build_date_edit(page, date, font_obj)
 
         edits = [name_edit]
         if date_edit:
